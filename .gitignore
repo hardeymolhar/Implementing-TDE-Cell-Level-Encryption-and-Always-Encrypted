@@ -1,0 +1,24 @@
+# Keys and certificates
+*.pem
+*.pvk
+*.pfx
+*.der
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+crash.log
+
+# Source videos (GIFs are kept)
+*.mov
+
+# Logs and local settings
+*.log
+.claude/
+.DS_Store
+
+# Generated CREATE CERTIFICATE with the private key (see README step A7)
+create_cert.sql
