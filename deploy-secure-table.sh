@@ -113,24 +113,24 @@ sqlcmd \
   -Q "
 SET NOCOUNT ON;
 
-SELECT
-    c.name AS column_name,
-    c.encryption_type_desc,
-    c.is_masked,
-    sc.label AS sensitivity_label,
-    sc.information_type
-FROM sys.columns AS c
-LEFT JOIN sys.sensitivity_classifications AS sc
-    ON sc.major_id = c.object_id
-    AND sc.minor_id = c.column_id
-WHERE c.object_id = OBJECT_ID(N'Purchasing.SuppliersSecure')
-    AND (c.encryption_type IS NOT NULL OR c.is_masked = 1 OR sc.label IS NOT NULL)
-ORDER BY c.column_id;
-"
+# SELECT
+#     c.name AS column_name,
+#     c.encryption_type_desc,
+#     c.is_masked,
+#     sc.label AS sensitivity_label,
+#     sc.information_type
+# FROM sys.columns AS c
+# LEFT JOIN sys.sensitivity_classifications AS sc
+#     ON sc.major_id = c.object_id
+#     AND sc.minor_id = c.column_id
+# WHERE c.object_id = OBJECT_ID(N'Purchasing.SuppliersSecure')
+#     AND (c.encryption_type IS NOT NULL OR c.is_masked = 1 OR sc.label IS NOT NULL)
+# ORDER BY c.column_id;
+# "
 
-echo -e "${GREEN}==========================================${NC}"
-echo -e "${GREEN}Purchasing.SuppliersSecure deployed.${NC}"
-echo -e "${GREEN}==========================================${NC}"
+# echo -e "${GREEN}==========================================${NC}"
+# echo -e "${GREEN}Purchasing.SuppliersSecure deployed.${NC}"
+# echo -e "${GREEN}==========================================${NC}"
 
 
 # # ==========================================

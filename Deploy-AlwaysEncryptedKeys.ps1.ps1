@@ -378,34 +378,51 @@ New-SqlColumnEncryptionKey `
 # =========================================================
 # STEP 15 — Encrypt Existing Columns In Place (cmdlet route)
 # =========================================================
-# WHAT: encrypt two columns that already hold data in Purchasing.SuppliersSecure
-#       (created and loaded by sql/create_ae_table.sql). Each
-#       New-SqlColumnEncryptionSettings names ONE column: which column, which
+# WHAT: encrypt the four bank columns that already hold data in
+#       Purchasing.SuppliersSecure (created and loaded by sql/create_ae_table.sql).
+#       Each New-SqlColumnEncryptionSettings names ONE column: which column, which
 #       encryption type, which CEK. Columns not listed are left alone.
-# WHY:  this is the PowerShell route to in-place encryption. The cmdlet sends the
-#       CEK to the server's secure enclave, and the enclave encrypts the data
-#       inside the database. The other two bank columns use the T-SQL route,
-#       sql/ae_inplace_encryption.sql, so both routes can be compared.
+# WHY:  the cmdlet sends the CEK to the server's secure enclave, and the enclave
+#       encrypts the data inside the database: no rows leave the server.
 #       -DisableFallBackToClientSide makes it fail rather than quietly download
 #       every row and encrypt it on this machine if the enclave can't be used.
+#
+# DETERMINISTIC vs RANDOMIZED:
+#   Deterministic: the same value always gives the same ciphertext. That allows
+#     equality lookups, joins, GROUP BY and DISTINCT, even on connections without
+#     an enclave, but it reveals which rows share a value. Use it only where
+#     those operations are needed and repeated values reveal little.
+#   Randomized: the same value gives different ciphertext every time. Nothing
+#     leaks, and with an enclave-enabled key, queries can still use =, LIKE and
+#     ranges inside the enclave. This is the safer default.
+#   String columns need a *_BIN2 collation for deterministic encryption;
+#   create_ae_table.sql already gives all four bank columns Latin1_General_BIN2.
 $columnSettings = @(
-    New-SqlColumnEncryptionSettings `
-        -ColumnName "Purchasing.SuppliersSecure.BankAccountCode" `
-        -EncryptionType "Randomized" `
-        -EncryptionKey $cekName
-
-    New-SqlColumnEncryptionSettings `
-        -ColumnName "Purchasing.SuppliersSecure.BankInternationalCode" `
-        -EncryptionType "Randomized" `
-        -EncryptionKey $cekName
-
+    # Deterministic: unique per supplier and used for exact lookups and payment
+    # matching, so equality search and the index on this column stay useful.
     New-SqlColumnEncryptionSettings `
         -ColumnName "Purchasing.SuppliersSecure.BankAccountNumber" `
+        -EncryptionType "Deterministic" `
+        -EncryptionKey $cekName
+
+    # Deterministic: a SWIFT/BIC code identifies a bank, not a person, and is
+    # public. Grouping or joining suppliers by bank needs equal ciphertext.
+    New-SqlColumnEncryptionSettings `
+        -ColumnName "Purchasing.SuppliersSecure.BankInternationalCode" `
+        -EncryptionType "Deterministic" `
+        -EncryptionKey $cekName
+
+    # Randomized: free-text personal data, never joined on. The enclave still
+    # allows LIKE searches.
+    New-SqlColumnEncryptionSettings `
+        -ColumnName "Purchasing.SuppliersSecure.BankAccountName" `
         -EncryptionType "Randomized" `
         -EncryptionKey $cekName
 
+    # Randomized: a branch/sort code has few distinct values, so deterministic
+    # ciphertext would show which suppliers share a branch.
     New-SqlColumnEncryptionSettings `
-        -ColumnName "Purchasing.SuppliersSecure.BankAccountName" `
+        -ColumnName "Purchasing.SuppliersSecure.BankAccountCode" `
         -EncryptionType "Randomized" `
         -EncryptionKey $cekName
 )

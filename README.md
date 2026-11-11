@@ -5,7 +5,22 @@ A DP-300 lab on one Terraform-built environment: **where each feature encrypts, 
 **What you will prove**
 - ✅ **TDE:** the database is encrypted at rest with your own Key Vault key.
 - ✅ **CLE:** one column is encrypted. The admin can decrypt it, a non-admin can't until granted.
-- ⏳ **Always Encrypted:** encryption done by the client, so the server never sees plaintext. *(next)*
+- ✅ **Always Encrypted:** bank columns encrypted in place inside a secure enclave. A database admin without Key Vault access sees only ciphertext.
+
+**Tools used**
+
+Most of the lab was run from the IDE: SQL queries, scripts and the evidence recordings all come from VS Code.
+
+| Tool | Used for |
+|---|---|
+| Whizlabs cloud sandbox | The temporary Azure subscription the lab runs in |
+| Terraform | Builds the Key Vault, keys, SQL server, database, TDE and logging |
+| Azure SQL Database | `cle-database`, the target for TDE, CLE and Always Encrypted |
+| VS Code (MSSQL extension) | Runs the T-SQL, shows the query results and is the source of the screen recordings |
+| Azure CLI | Looks up resources, reads Key Vault secrets and issues access tokens (`az account get-access-token`) |
+| sqlcmd | Runs the table scripts from [deploy-secure-table.sh](deploy-secure-table.sh) |
+| Entra ID access token | Signs `sqlcmd` into SQL, and lets PowerShell call Key Vault, without a stored password |
+| PowerShell (SqlServer module) | Creates the Always Encrypted keys and encrypts columns with `Set-SqlColumnEncryption` |
 
 > **Structure:** the Terraform in [terraform/](terraform/main.tf) uses three modules: [key_vault](terraform/modules/key_vault/main.tf) for keys, secrets and the certificate, [sql](terraform/modules/sql/main.tf) for the server, database, TDE and auditing, and [monitoring](terraform/modules/monitoring/main.tf) for the log storage and Key Vault logging.
 
@@ -77,13 +92,6 @@ flowchart LR
     linkStyle default stroke:#64748b,stroke-width:2.5px
 ```
 
-**How to read it:** each arrow is a sentence, and the text on it says *why* the next piece needs the one before it. Start at ① and follow the arrows to ⑥.
-
-**In one sentence:** the server gets an identity (③) and is allowed (④) to use the key (②) held in the vault (①), so it protects the database (⑤) and the database (⑥) is encrypted from the moment it is created.
-
-*The numbers match the checks below, and each check shows the deployed result.*
-
-> 🔽 **Boxes marked "Click to expand" open on click.** They hold the Terraform code (lines marked `# <<<` are the ones that make TDE work) and the command to reproduce each check.
 
 <details><summary>🔽 <b>Click to expand:</b> setup for the verify commands (run once from the project folder, stay in <code>terraform/</code>)</summary>
 
@@ -603,7 +611,7 @@ flowchart LR
 |---|---|---|
 | Create an empty encrypted table | ✅ | ✅ Same |
 | Insert new rows | Client encrypts | Client encrypts, same |
-| Encrypt existing data | Client tool downloads every row, encrypts, re-uploads | ✅ `ALTER COLUMN` inside the database |
+| Encrypt existing data | Client tool downloads every row, encrypts, re-uploads | ✅ Encrypted inside the database's enclave |
 | Search randomized columns | ❌ | ✅ `=`, `LIKE`, ranges |
 | Extra setup | None | VBS enclave and an enclave-enabled master key |
 
@@ -657,25 +665,29 @@ az sql db show --server "$SQL" -g "$RG" -n cle-database --query "{name:name, enc
 
 ### 5. Build steps
 
-**You will see:** a plaintext table loaded and classified, then encrypted in place by two routes, two columns each.
+**You will see:** a plaintext table loaded and classified, then all four bank columns encrypted in place by PowerShell.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"trebuchet ms, verdana, arial, sans-serif","fontSize":"16px","primaryColor":"#dbeafe","primaryTextColor":"#0f172a","primaryBorderColor":"#1d4ed8","lineColor":"#64748b","textColor":"#0f172a","clusterBkg":"#f8fafc","clusterBorder":"#94a3b8","titleColor":"#0f172a","edgeLabelBackground":"#ffffff"},"flowchart":{"nodeSpacing":50,"rankSpacing":65,"padding":18,"curve":"basis","htmlLabels":true}}}%%
 flowchart LR
     A["① Terraform<br/>master key + VBS enclave"] -->|"enclave on"| B["② Bash<br/>plaintext table,<br/>1,000 rows, labels"]
-    B -->|"data exists"| C["③ PowerShell<br/>keys + STEP 15<br/>2 columns"]
-    C -->|"AE_CEK exists"| D["④ T-SQL ALTER COLUMN<br/>2 columns"]
-    class A,B,C,D local
+    B -->|"data exists"| C["③ PowerShell<br/>keys + STEP 15<br/>4 columns"]
+    class A,B,C local
     classDef local fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
     linkStyle default stroke:#64748b,stroke-width:2.5px
 ```
 
-| Column | Protection | Encrypted by |
+| Column | Protection | Why |
 |---|---|---|
-| `BankAccountNumber` | 🔐 Deterministic, searchable by equality | ④ T-SQL `ALTER COLUMN` |
-| `BankAccountName` | 🔐 Randomized | ④ T-SQL `ALTER COLUMN` |
-| `BankAccountCode`, `BankInternationalCode` | 🔐 Randomized | ③ PowerShell STEP 15 |
+| `BankAccountNumber` | 🔐 Deterministic | Unique per supplier. Exact lookups and payment matching need equal ciphertext. |
+| `BankInternationalCode` | 🔐 Deterministic | A public bank identifier (SWIFT/BIC). Grouping or joining by bank needs equal ciphertext, and repeats reveal little. |
+| `BankAccountName` | 🔐 Randomized | Free-text personal data, never joined on. The enclave still allows `LIKE`. |
+| `BankAccountCode` | 🔐 Randomized | Few distinct values. Deterministic would show which suppliers share a branch. |
 | `PhoneNumber`, `CreatedBy` | 🎭 Dynamic data masking | Not encrypted |
+
+**Rule of thumb:** deterministic leaks which rows share a value, so use it only where equality, joins or grouping are needed. Randomized is the safer default. With an enclave-enabled key it still supports `=`, `LIKE` and ranges inside the enclave. Deterministic string columns need a `*_BIN2` collation, which [sql/create_ae_table.sql](sql/create_ae_table.sql) already sets.
+
+All four columns are encrypted by ③ PowerShell STEP 15.
 
 #### ① Terraform
 
@@ -741,10 +753,11 @@ Source: [Deploy-AlwaysEncryptedKeys.ps1.ps1 STEP 15](Deploy-AlwaysEncryptedKeys.
 ```powershell
 $columnSettings = @(
     New-SqlColumnEncryptionSettings `
-        -ColumnName "Purchasing.SuppliersSecure.BankAccountCode" `     # <<< which column
-        -EncryptionType "Randomized" `
+        -ColumnName "Purchasing.SuppliersSecure.BankAccountNumber" `   # <<< which column
+        -EncryptionType "Deterministic" `                              # <<< equality lookups
         -EncryptionKey $cekName
-    # ... BankInternationalCode, the same way
+    # ... BankInternationalCode (Deterministic),
+    #     BankAccountName and BankAccountCode (Randomized)
 )
 
 Set-SqlColumnEncryption `
@@ -763,42 +776,6 @@ SELECT k.name, v.encryption_algorithm_name, v.encrypted_value
 FROM sys.column_encryption_keys AS k
 JOIN sys.column_encryption_key_values AS v
     ON v.column_encryption_key_id = k.column_encryption_key_id;
-```
-
-</details>
-
-#### ④ The T-SQL route: `ALTER COLUMN`
-
-[sql/ae_inplace_encryption.sql](sql/ae_inplace_encryption.sql) encrypts `BankAccountNumber` and `BankAccountName` with `ALTER TABLE ... ALTER COLUMN`. It needs a connection with Always Encrypted and enclave computations on, which `sqlcmd` can't make. So the last block of [deploy-secure-table.sh](deploy-secure-table.sh) runs it with `Invoke-Sqlcmd`.
-
-> 🎬 **Evidence to add:** `AE_InPlace_TSQL.gif`: the last block of the script, ending with the bank columns' encryption types.
-
-<details><summary>🔽 <b>Click to expand:</b> the <code>ALTER COLUMN</code> and how it is run</summary>
-
-Source: [sql/ae_inplace_encryption.sql lines 48-57](sql/ae_inplace_encryption.sql#L48-L57)
-
-```sql
-ALTER TABLE Purchasing.SuppliersSecure
-ALTER COLUMN BankAccountNumber nvarchar(20)
-    COLLATE Latin1_General_BIN2                        -- <<< required for deterministic
-    ENCRYPTED WITH
-    (
-        COLUMN_ENCRYPTION_KEY = AE_CEK,                -- <<< enclave-enabled key
-        ENCRYPTION_TYPE = DETERMINISTIC,
-        ALGORITHM = 'AEAD_AES_256_CBC_HMAC_SHA_256'
-    )
-    NULL;
-```
-
-Source: [deploy-secure-table.sh, in-place encryption block](deploy-secure-table.sh)
-
-```powershell
-Invoke-Sqlcmd `
-  -ConnectionString "...;Column Encryption Setting=Enabled;Attestation Protocol=None" `   # <<< AE + enclave
-  -AccessToken $env:SQL_ACCESS_TOKEN `
-  -KeyVaultAccessToken $env:KEY_VAULT_TOKEN `     # <<< lets the driver unwrap AE_CEK
-  -InputFile $env:SQL_FILE `
-  -AbortOnError
 ```
 
 </details>

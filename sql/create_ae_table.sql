@@ -2,8 +2,9 @@
    Purchasing.SuppliersSecure: the Purchasing.Suppliers design from
    create_table.sql, created as PLAINTEXT, loaded with 1,000 fake rows and
    classified. Always Encrypted is added afterwards, in place:
-     sql/ae_inplace_encryption.sql       BankAccountNumber, BankAccountName
-     Deploy-AlwaysEncryptedKeys STEP 15  BankAccountCode, BankInternationalCode
+     Deploy-AlwaysEncryptedKeys STEP 15  all four bank columns
+       Deterministic: BankAccountNumber, BankInternationalCode
+       Randomized:    BankAccountName, BankAccountCode
    Differences from Purchasing.Suppliers, for in-place encryption:
      - no temporal history
      - the four bank columns use a BIN2 collation
